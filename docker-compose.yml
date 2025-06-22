@@ -33,7 +33,8 @@ services:
 
   orchestrator:
     build:
-      context: ./orchestrator
+      context: .
+      dockerfile: orchestrator/Dockerfile
     container_name: orchestrator_service
     depends_on:
       - db_orchestrator
@@ -45,8 +46,8 @@ services:
 
   api:
     build:
-      context: ./api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: api/Dockerfile
     container_name: api_service
     depends_on:
       - db_api
@@ -101,4 +102,4 @@ volumes:
   postgres_api_data:
 
 networks:
-  backend:
+  backend: {}

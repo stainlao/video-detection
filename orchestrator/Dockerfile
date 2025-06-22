@@ -1,14 +1,12 @@
 FROM python:3.10-slim
 
-# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем зависимости и устанавливаем их
-COPY requirements.txt .
+COPY orchestrator /app
+COPY kafka_to /app/kafka_to
+
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем весь код проекта orchestrator (включая kafka_to)
-COPY . .
+ENV PYTHONPATH=/app
 
-# Ждём PostgreSQL, затем запускаем orchestrator
 CMD ["bash", "-c", "python wait_for_postgres.py && python main.py"]
