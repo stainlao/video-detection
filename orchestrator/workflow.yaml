@@ -1,0 +1,23 @@
+states:
+  - init_startup
+  - in_startup_processing
+  - active
+  - in_shutdown_processing
+  - inactive
+
+transitions:
+  - trigger: start
+    source: init_startup
+    dest: in_startup_processing
+
+  - trigger: activate
+    source: in_startup_processing
+    dest: active
+
+  - trigger: shutdown
+    source: active
+    dest: in_shutdown_processing
+
+  - trigger: stop
+    source: in_shutdown_processing
+    dest: inactive

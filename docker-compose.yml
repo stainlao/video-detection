@@ -1,0 +1,104 @@
+version: "3.9"
+
+services:
+  db_orchestrator:
+    image: postgres:15
+    container_name: pg_orchestrator
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: orchestrator
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_orchestrator_data:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  db_api:
+    image: postgres:15
+    container_name: pg_api
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: api
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_api_data:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  orchestrator:
+    build:
+      context: ./orchestrator
+    container_name: orchestrator_service
+    depends_on:
+      - db_orchestrator
+      - kafka
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_orchestrator:5432/orchestrator
+    networks:
+      - backend
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: api_service
+    depends_on:
+      - db_api
+      - kafka
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_api:5432/api
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "8000:8000"
+    networks:
+      - backend
+
+  zookeeper:
+    image: bitnami/zookeeper:3.8
+    container_name: zookeeper
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: yes
+    networks:
+      - backend
+
+  kafka:
+    image: bitnami/kafka:3.6
+    container_name: kafka
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092
+      ALLOW_PLAINTEXT_LISTENER: yes
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    networks:
+      - backend
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka_ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      - kafka
+    networks:
+      - backend
+
+volumes:
+  postgres_orchestrator_data:
+  postgres_api_data:
+
+networks:
+  backend:

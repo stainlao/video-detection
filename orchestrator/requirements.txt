@@ -1,0 +1,7 @@
+PyYAML
+transitions
+asyncpg
+SQLAlchemy[asyncio]
+sqlalchemy>=2.0
+asyncpg
+aiokafka
