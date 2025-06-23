@@ -9,4 +9,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 ENV PYTHONPATH=/app
 
-CMD ["bash", "-c", "python wait_for_postgres.py && python main.py"]
+CMD ["bash", "-c", "python wait_for_postgres.py && python create_tables.py && python main.py"]
