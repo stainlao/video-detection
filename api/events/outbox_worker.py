@@ -9,7 +9,7 @@ from models import OutboxModel, OutboxStatus
 from kafka_to.producer import KafkaProducerWrapper
 from kafka_to.settings import KAFKA_BOOTSTRAP_SERVERS, SCENARIO_COMMANDS_TOPIC
 
-POLL_INTERVAL = 2  # seconds
+POLL_INTERVAL = 5  # seconds
 
 
 async def process_outbox_events(producer: KafkaProducerWrapper):

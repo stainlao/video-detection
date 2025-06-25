@@ -1,77 +1,102 @@
+import sys
+import os
 import asyncio
-import yaml
-from transitions import Machine
-from crud import create_scenario, get_scenario, update_scenario_state
-from models import ScenarioModel
-from db import async_session  # обязательно импортируй сессию
-import uuid
 
-# Загрузка состояния FSM из workflow.yaml
-with open("workflow.yaml", "r") as f:
-    workflow = yaml.safe_load(f)
+from sqlalchemy.exc import NoResultFound
 
-states = workflow["states"]
-transitions = workflow["transitions"]
+from fsm_task import ScenarioFSM
+from db import async_session
+from crud import get_scenario, create_scenario
+from kafka_to.consumer import KafkaConsumerWrapper
+from kafka_to.producer import KafkaProducerWrapper
+from kafka_to.settings import (
+    KAFKA_BOOTSTRAP_SERVERS,
+    SCENARIO_COMMANDS_TOPIC,
+    SCENARIO_EVENTS_TOPIC,
+    KAFKA_GROUP_ID,
+)
 
-
-class ScenarioFSM:
-    def __init__(self, model: ScenarioModel, session):
-        self.model = model
-        self.session = session
-        self.machine = Machine(
-            model=self,
-            states=states,
-            transitions=transitions,
-            initial=model.state,
-        )
-
-    # Асинхронные методы-обработчики переходов (вызываем отдельно)
-    async def on_start(self):
-        print(f"FSM({self.model.id}): start → {self.state}")
-        await update_scenario_state(self.session, self.model.id, self.state)
-
-    async def on_activate(self):
-        print(f"FSM({self.model.id}): activate → {self.state}")
-        await update_scenario_state(self.session, self.model.id, self.state)
-
-    async def on_shutdown(self):
-        print(f"FSM({self.model.id}): shutdown → {self.state}")
-        await update_scenario_state(self.session, self.model.id, self.state)
-
-    async def on_stop(self):
-        print(f"FSM({self.model.id}): stop → {self.state}")
-        await update_scenario_state(self.session, self.model.id, self.state)
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 
-async def run_fsm_lifecycle():
-    print("Создание нового FSM в состоянии 'init_startup'")
+fsm_tasks = {}
+event_publish_queue = asyncio.Queue()
+kafka_producer = None  # инициализируется на старте
 
-    async with async_session() as session:
-        scenario_id = await create_scenario("init_startup")
-        print(f"scenario_id = {scenario_id}")
+# --- FSM manager: получение или запуск таски FSM по scenario_id ---
+async def get_or_create_fsm(scenario_id, initial_state=None):
+    if scenario_id not in fsm_tasks:
+        async with async_session() as session:
+            model = await get_scenario(scenario_id)
+            if model is None:
+                if initial_state is None:
+                    initial_state = "init_startup"
+                new_id = await create_scenario(initial_state)
+                model = await get_scenario(new_id)
+            fsm = ScenarioFSM(
+                model=model,
+                session=session,
+                kafka_producer=kafka_producer,
+                event_publish_queue=event_publish_queue,
+            )
+            task = asyncio.create_task(fsm.run())
+            fsm_tasks[str(model.id)] = fsm
+            return fsm
+    return fsm_tasks[scenario_id]
 
-        model = await get_scenario(scenario_id)
-        fsm = ScenarioFSM(model, session)
 
-        print("Переход: start")
-        fsm.start()           # синхронный переход
-        await fsm.on_start()  # async обработчик
 
-        print("Переход: activate")
-        fsm.activate()
-        await fsm.on_activate()
+# --- Kafka consumer event handler ---
+async def handle_command(event):
+    scenario_id = event.get("scenario_id")
+    event_type = event.get("event_type")
+    initial_state = event.get("initial_state")
+    if not scenario_id:
+        print("[Orchestrator] Event without scenario_id, ignoring:", event)
+        return
+    if event_type == "create_scenario":
+        fsm = await get_or_create_fsm(scenario_id, initial_state=initial_state)
+    else:
+        fsm = await get_or_create_fsm(scenario_id)
+    await fsm.queue.put(event)
 
-        print("Переход: shutdown")
-        fsm.shutdown()
-        await fsm.on_shutdown()
 
-        print("Переход: stop")
-        fsm.stop()
-        await fsm.on_stop()
+# --- Event publisher worker (с ретраями) ---
+async def event_publisher_worker():
+    while True:
+        event = await event_publish_queue.get()
+        # До 5 попыток отправить в Kafka, иначе просто лог
+        for attempt in range(5):
+            try:
+                await kafka_producer.send(SCENARIO_EVENTS_TOPIC, event)
+                print(f"[Publisher] Sent event: {event}")
+                break
+            except Exception as e:
+                print(f"[Publisher] Error sending event: {e}. Retrying...")
+                await asyncio.sleep(1)
+        else:
+            print(f"[Publisher] Failed to send event after retries: {event}")
 
-        final_model = await get_scenario(scenario_id)
-        print(f"Финальное состояние в БД: {final_model.state}")
+async def main():
+    global kafka_producer
+    kafka_producer = KafkaProducerWrapper(KAFKA_BOOTSTRAP_SERVERS)
+    await kafka_producer.start()
 
+    consumer = KafkaConsumerWrapper(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        topic=SCENARIO_COMMANDS_TOPIC,
+        group_id=KAFKA_GROUP_ID + "_orch",
+    )
+    await consumer.start()
+
+    # Стартуем воркеры
+    publisher_task = asyncio.create_task(event_publisher_worker())
+    consumer_task = asyncio.create_task(consumer.consume(handle_command))
+
+    print("[Orchestrator] Service started. Listening for scenario commands...")
+
+    # Ждём завершения задач (обычно бесконечно)
+    await asyncio.gather(publisher_task, consumer_task)
 
 if __name__ == "__main__":
-    asyncio.run(run_fsm_lifecycle())
+    asyncio.run(main())

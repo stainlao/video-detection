@@ -16,14 +16,12 @@ async def create_scenario(state: str) -> uuid.UUID:
     return new_id
 
 
-async def get_scenario(scenario_id: uuid.UUID) -> ScenarioModel:
+async def get_scenario(scenario_id: uuid.UUID) -> ScenarioModel | None:
     async with async_session() as session:
         stmt = select(ScenarioModel).where(ScenarioModel.id == scenario_id)
         result = await session.execute(stmt)
-        scenario = result.scalar_one_or_none()
-        if scenario is None:
-            raise NoResultFound(f"Scenario {scenario_id} not found")
-        return scenario
+        return result.scalar_one_or_none()
+
 
 
 async def update_scenario_state(session: AsyncSession, scenario_id: uuid.UUID, new_state: str) -> None:

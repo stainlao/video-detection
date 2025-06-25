@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID, uuid4
 
@@ -31,9 +31,9 @@ async def create_scenario(session: AsyncSession = Depends(get_db)):
         session.add(outbox)
     return ScenarioCreateResponse(id=str(scenario_id), state="init_startup")
 
-# Инициировать остановку сценария (init_shutdown)
+
 @router.post("/scenario/{scenario_id}/")
-async def shutdown_scenario(
+async def toggle_scenario_state(
     scenario_id: UUID,
     session: AsyncSession = Depends(get_db)
 ):
@@ -41,19 +41,49 @@ async def shutdown_scenario(
         scenario = await session.get(ScenarioModel, scenario_id)
         if not scenario:
             raise HTTPException(status_code=404, detail="Scenario not found")
-        # Shutdown допускается только из active!
-        if scenario.state != "active":
+
+        # Для читаемости: выделим возможные статусы
+        INACTIVE_STATES = {"inactive", "in_shutdown_processing"}
+        ACTIVE_STATES = {"active", "in_startup_processing"}
+        INIT_STATES = {"init_startup", "init_shutdown"}
+
+        # Если сценарий в процессе смены состояния — возвращаем ошибку
+        if scenario.state in INIT_STATES:
             raise HTTPException(
-                status_code=409,
-                detail=f"Shutdown allowed only from 'active' state, current state: {scenario.state}"
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Scenario is already in transition: {scenario.state}"
             )
-        outbox = OutboxModel(
-            event_type="trigger_scenario",
-            payload={
-                "scenario_id": str(scenario_id),
-                "trigger": "init_shutdown"
-            },
-            status=OutboxStatus.PENDING
-        )
-        session.add(outbox)
-    return {"status": "accepted"}
+
+        # Если сценарий не активен — инициируем активацию
+        if scenario.state in INACTIVE_STATES:
+            outbox = OutboxModel(
+                event_type="trigger_scenario",
+                payload={
+                    "scenario_id": str(scenario_id),
+                    "trigger": "init_startup"
+                },
+                status=OutboxStatus.PENDING
+            )
+            session.add(outbox)
+            return {"status": "activation_requested", "current_state": scenario.state}
+
+        # Если сценарий активен — инициируем деактивацию
+        elif scenario.state in ACTIVE_STATES:
+            outbox = OutboxModel(
+                event_type="trigger_scenario",
+                payload={
+                    "scenario_id": str(scenario_id),
+                    "trigger": "init_shutdown"
+                },
+                status=OutboxStatus.PENDING
+            )
+            session.add(outbox)
+            return {"status": "shutdown_requested", "current_state": scenario.state}
+
+        else:
+            # Любой неожиданный статус — ошибка (можно заменить на обработку по нужной бизнес-логике)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Scenario in unexpected state: {scenario.state}"
+            )
+
