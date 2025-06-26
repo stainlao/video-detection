@@ -2,8 +2,6 @@ import sys
 import os
 import asyncio
 
-from sqlalchemy.exc import NoResultFound
-
 from fsm_task import ScenarioFSM
 from db import async_session
 from crud import get_scenario, create_scenario
@@ -23,6 +21,7 @@ fsm_tasks = {}
 event_publish_queue = asyncio.Queue()
 kafka_producer = None  # инициализируется на старте
 
+
 # --- FSM manager: получение или запуск таски FSM по scenario_id ---
 async def get_or_create_fsm(scenario_id, initial_state=None):
     if scenario_id not in fsm_tasks:
@@ -41,8 +40,10 @@ async def get_or_create_fsm(scenario_id, initial_state=None):
             )
             task = asyncio.create_task(fsm.run())
             fsm_tasks[str(model.id)] = fsm
+            print(f"[Orchestrator] FSM for scenario_id {model.id} CREATED (state={model.state})")
             return fsm
     return fsm_tasks[scenario_id]
+
 
 
 
@@ -54,11 +55,12 @@ async def handle_command(event):
     if not scenario_id:
         print("[Orchestrator] Event without scenario_id, ignoring:", event)
         return
+    print(f"[Orchestrator] Received event from Kafka: {event}")  # ← вот эта строка!
     if event_type == "create_scenario":
-        fsm = await get_or_create_fsm(scenario_id, initial_state=initial_state)
+        await get_or_create_fsm(scenario_id, initial_state=initial_state)
     else:
         fsm = await get_or_create_fsm(scenario_id)
-    await fsm.queue.put(event)
+        await fsm.queue.put(event)
 
 
 # --- Event publisher worker (с ретраями) ---
@@ -78,10 +80,11 @@ async def event_publisher_worker():
             print(f"[Publisher] Failed to send event after retries: {event}")
 
 async def main():
+    print("[Orchestrator] main started...")
     global kafka_producer
     kafka_producer = KafkaProducerWrapper(KAFKA_BOOTSTRAP_SERVERS)
     await kafka_producer.start()
-
+    print("[Orchestrator] kafka producer started...")
     consumer = KafkaConsumerWrapper(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         topic=SCENARIO_COMMANDS_TOPIC,

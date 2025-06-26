@@ -15,6 +15,7 @@ with open("workflow.yaml", "r") as f:
 states = workflow["states"]
 transitions = workflow["transitions"]
 
+
 class ScenarioFSM:
     def __init__(self, model, session, kafka_producer: KafkaProducerWrapper, event_publish_queue: asyncio.Queue):
         self.model = model
@@ -64,11 +65,14 @@ class ScenarioFSM:
         print(f"[FSM:{self.scenario_id}] State changed to {self.state}.")
 
     async def heartbeat_watcher(self):
-        while True:
-            await asyncio.sleep(self.heartbeat_timeout)
-            if (datetime.utcnow() - self.last_heartbeat).total_seconds() > self.heartbeat_timeout:
-                print(f"[FSM:{self.scenario_id}] Heartbeat timeout. Triggering restart.")
-                await self.queue.put({"event_type": "runner_lost"})
+        try:
+            while True:
+                await asyncio.sleep(self.heartbeat_timeout)
+                if (datetime.utcnow() - self.last_heartbeat).total_seconds() > self.heartbeat_timeout:
+                    print(f"[FSM:{self.scenario_id}] Heartbeat timeout. Triggering restart.")
+                    await self.queue.put({"event_type": "runner_lost"})
+        except asyncio.CancelledError:
+            print(f"[FSM:{self.scenario_id}] Heartbeat watcher stopped (FSM inactive).")
 
     async def initiate_restart(self):
         # Корректный shutdown (через автомат)
@@ -91,13 +95,14 @@ class ScenarioFSM:
             print(f"[FSM:{self.scenario_id}] Error during restart: {e}")
 
     async def run(self):
-        asyncio.create_task(self.heartbeat_watcher())
+        heartbeat_task = asyncio.create_task(self.heartbeat_watcher())
         while True:
             event = await self.queue.get()
             await self.process_event(event)
-            # Если FSM перешёл в inactive — завершить таску (если не нужно автоперезапускать)
-            # Здесь restart делается только при потере heartbeat, не при ручном выключении
             if self.state == "inactive":
                 print(f"[FSM:{self.scenario_id}] FSM task finished (inactive).")
                 break
+        # После завершения — отменить watcher
+        heartbeat_task.cancel()
+        await heartbeat_task
         print(f"[FSM:{self.scenario_id}] Task is exiting, should be cleaned up.")

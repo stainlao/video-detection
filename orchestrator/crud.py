@@ -23,7 +23,6 @@ async def get_scenario(scenario_id: uuid.UUID) -> ScenarioModel | None:
         return result.scalar_one_or_none()
 
 
-
 async def update_scenario_state(session: AsyncSession, scenario_id: uuid.UUID, new_state: str) -> None:
     stmt = (
         update(ScenarioModel)
