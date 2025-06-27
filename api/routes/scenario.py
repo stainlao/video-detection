@@ -45,19 +45,21 @@ async def toggle_scenario_state(
         if not scenario:
             raise HTTPException(status_code=404, detail="Scenario not found")
 
-        INACTIVE_STATES = {"inactive", "in_shutdown_processing"}
-        ACTIVE_STATES = {"active", "in_startup_processing"}
-        INIT_STATES = {"init_startup", "init_shutdown"}
+        # Объявим группы состояний (теперь ACTIVE и INACTIVE только финальные состояния)
+        INACTIVE_STATES = {"inactive"}
+        ACTIVE_STATES = {"active"}
+        # Явно все транзакционные/промежуточные состояния (init*, in_*processing)
+        TRANSITION_STATES = {
+            "init_startup", "in_startup_processing", "init_shutdown", "in_shutdown_processing"
+        }
 
-        # Если сценарий уже в переходном состоянии
-        if scenario.state in INIT_STATES:
+        if scenario.state in TRANSITION_STATES:
+            # === Вот теперь эта проверка строго ловит все промежуточные состояния ===
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Scenario is already in transition: {scenario.state}"
+                detail=f"Scenario is in a transition state: {scenario.state}. Status change not allowed."
             )
-
-        # Активация сценария
-        if scenario.state in INACTIVE_STATES:
+        elif scenario.state in INACTIVE_STATES:
             outbox = OutboxModel(
                 event_type="trigger_scenario",
                 payload={
@@ -68,8 +70,6 @@ async def toggle_scenario_state(
             )
             session.add(outbox)
             return {"status": "activation_requested", "current_state": scenario.state}
-
-        # Остановка сценария
         elif scenario.state in ACTIVE_STATES:
             outbox = OutboxModel(
                 event_type="trigger_scenario",
@@ -81,9 +81,8 @@ async def toggle_scenario_state(
             )
             session.add(outbox)
             return {"status": "shutdown_requested", "current_state": scenario.state}
-
         else:
-            # Некорректное состояние
+            # На случай появления неизвестных/ошибочных статусов
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Scenario in unexpected state: {scenario.state}"
