@@ -1,0 +1,4 @@
+aiokafka
+aioboto3
+boto3
+uvloop

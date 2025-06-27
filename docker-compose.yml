@@ -97,9 +97,83 @@ services:
     networks:
       - backend
 
+  # ---------- S3-совместимое хранилище MinIO ----------
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server --address 0.0.0.0:9000 /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - backend
+
+
+  minio-init:
+    image: minio/mc
+    container_name: minio-init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb -p myminio/mybucket;
+      /usr/bin/mc policy set public myminio/mybucket;
+      exit 0;
+      "
+    networks:
+      - backend
+
+  # ------------------ RUNNER-1 -------------------
+  runner1:
+    build:
+      context: .
+      dockerfile: runner/Dockerfile
+    container_name: runner1
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_BUCKET: mybucket
+      S3_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_ENDPOINT_URL: http://minio:9000
+      RUNNER_ID: runner-1
+    depends_on:
+      - kafka
+      - minio
+    networks:
+      - backend
+
+  # ------------------ RUNNER-2 (резервный) -------------------
+  runner2:
+    build:
+      context: .
+      dockerfile: runner/Dockerfile
+    container_name: runner2
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_BUCKET: mybucket
+      S3_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_ENDPOINT_URL: http://minio:9000
+      RUNNER_ID: runner-2
+    depends_on:
+      - kafka
+      - minio
+    networks:
+      - backend
+
 volumes:
   postgres_orchestrator_data:
   postgres_api_data:
+  minio_data:
 
 networks:
   backend: {}
