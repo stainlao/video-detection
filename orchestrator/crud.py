@@ -7,13 +7,12 @@ from models import ScenarioModel
 from db import async_session
 
 
-async def create_scenario(state: str) -> uuid.UUID:
-    new_id = uuid.uuid4()
+async def create_scenario(scenario_id: uuid.UUID, state: str) -> uuid.UUID:
     async with async_session() as session:
         async with session.begin():
-            scenario = ScenarioModel(id=new_id, state=state)
+            scenario = ScenarioModel(id=scenario_id, state=state)
             session.add(scenario)
-    return new_id
+    return scenario_id
 
 
 async def get_scenario(scenario_id: uuid.UUID) -> ScenarioModel | None:

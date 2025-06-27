@@ -31,4 +31,6 @@ class ScenarioModel(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     state = Column(String, nullable=False, default="init_startup")
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)  # <--- добавить это поле
+
 

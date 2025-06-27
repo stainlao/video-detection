@@ -1,6 +1,7 @@
 import sys
 import os
 import asyncio
+import uuid
 
 from fsm_task import ScenarioFSM
 from db import async_session
@@ -25,13 +26,15 @@ kafka_producer = None  # инициализируется на старте
 # --- FSM manager: получение или запуск таски FSM по scenario_id ---
 async def get_or_create_fsm(scenario_id, initial_state=None):
     if scenario_id not in fsm_tasks:
+        # гарантируем тип UUID для работы с БД
+        scenario_uuid = uuid.UUID(scenario_id) if isinstance(scenario_id, str) else scenario_id
         async with async_session() as session:
-            model = await get_scenario(scenario_id)
+            model = await get_scenario(scenario_uuid)
             if model is None:
                 if initial_state is None:
                     initial_state = "init_startup"
-                new_id = await create_scenario(initial_state)
-                model = await get_scenario(new_id)
+                await create_scenario(scenario_uuid, initial_state)
+                model = await get_scenario(scenario_uuid)
             fsm = ScenarioFSM(
                 model=model,
                 session=session,
@@ -43,8 +46,6 @@ async def get_or_create_fsm(scenario_id, initial_state=None):
             print(f"[Orchestrator] FSM for scenario_id {model.id} CREATED (state={model.state})")
             return fsm
     return fsm_tasks[scenario_id]
-
-
 
 
 # --- Kafka consumer event handler ---
@@ -78,6 +79,7 @@ async def event_publisher_worker():
                 await asyncio.sleep(1)
         else:
             print(f"[Publisher] Failed to send event after retries: {event}")
+
 
 async def main():
     print("[Orchestrator] main started...")

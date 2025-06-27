@@ -38,7 +38,7 @@ class ScenarioFSM:
         if event_type == "heartbeat":
             self.last_heartbeat = datetime.utcnow()
             print(f"[FSM:{self.scenario_id}] Heartbeat received.")
-        elif event_type == "trigger":
+        elif event_type == "trigger_scenario":
             trigger = event["trigger"]
             try:
                 # transitions делает только sync смену state (если переход валиден)
