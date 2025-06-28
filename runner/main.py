@@ -9,19 +9,21 @@ from typing import Optional
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 SCENARIO_EVENTS_TOPIC = os.getenv("SCENARIO_EVENTS_TOPIC", "scenario_events")
-RUNNER_COMMANDS_TOPIC = os.getenv("SCENARIO_EVENTS_TOPIC", "scenario_events")  # используем тот же топик
+RUNNER_COMMANDS_TOPIC = os.getenv("RUNNER_COMMANDS_TOPIC", "runner_commands")
+RUNNER_HEARTBEATS_TOPIC = os.getenv("RUNNER_HEARTBEATS_TOPIC", "runner_heartbeats")
 RUNNER_ID = os.getenv("RUNNER_ID", f"runner-{uuid.uuid4()}")
 S3_BUCKET = os.getenv("S3_BUCKET", "mybucket")
 S3_REGION = os.getenv("S3_REGION", "us-east-1")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
 AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL", "http://minio:9000")
-HEARTBEAT_INTERVAL = 2  # seconds
+HEARTBEAT_INTERVAL = 4  # seconds
 PROGRESS_MARKER_KEY = "scenarios/{scenario_id}/progress.json"
 FRAME_KEY = "scenarios/{scenario_id}/frames/frame_{frame_idx:06d}.jpg"
 
+
 def s3_client():
-    return aioboto3.client(
+    return aioboto3.Session().client(
         "s3",
         region_name=S3_REGION,
         endpoint_url=AWS_ENDPOINT_URL,
@@ -29,9 +31,11 @@ def s3_client():
         aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
     )
 
+
 class Runner:
     def __init__(self):
         self.scenario_id: Optional[str] = None
+        self.run_id: Optional[str] = None  # добавляем run_id
         self.processing: bool = False
         self.frame_idx: int = 0
         self.heartbeat_task = None
@@ -66,20 +70,20 @@ class Runner:
         event_type = event.get("event_type")
         scenario_id = event.get("scenario_id")
         runner_id = event.get("runner_id")
+        run_id = event.get("run_id")  # Теперь ждём run_id в команде
 
-        # Стартовать обработку сценария только если runner_id совпадает с нашим
         if event_type == "runner_start" and runner_id == RUNNER_ID:
             print(f"[{RUNNER_ID}] Received start command for scenario {scenario_id}")
             if self.processing:
                 print(f"[{RUNNER_ID}] Already processing {self.scenario_id}, ignoring new start.")
                 return
             self.scenario_id = scenario_id
+            self.run_id = run_id  # Сохраняем run_id
             await self.start_processing()
         elif event_type == "runner_stop" and runner_id == RUNNER_ID:
             print(f"[{RUNNER_ID}] Received stop command.")
             await self.stop_processing()
         elif runner_id and runner_id != RUNNER_ID:
-            # Если приходит команда для другого runner, а мы что-то делаем — остановить работу
             if self.processing:
                 print(f"[{RUNNER_ID}] Another runner ({runner_id}) assigned. Stopping my work.")
                 await self.stop_processing()
@@ -91,18 +95,33 @@ class Runner:
         self.heartbeat_task = asyncio.create_task(self.heartbeat_loop())
         try:
             while self.processing:
-                await asyncio.sleep(1)  # эмуляция обработки кадра
+                await asyncio.sleep(5)  # эмуляция обработки кадра
                 await self.save_frame(self.scenario_id, self.frame_idx)
                 await self.write_progress_marker(self.scenario_id, self.frame_idx)
                 print(f"[{RUNNER_ID}] Frame {self.frame_idx} processed and saved.")
                 self.frame_idx += 1
-                # Для теста — завершить работу после 10 кадров
                 if self.frame_idx > 10:
                     print(f"[{RUNNER_ID}] Finished scenario {self.scenario_id}")
+                    # --- отправить runner_finished перед stop_processing
+                    await self.send_runner_finished()
                     await self.stop_processing()
         except Exception as ex:
             print(f"[{RUNNER_ID}] Processing exception: {ex}")
             await self.stop_processing()
+
+    async def send_runner_finished(self):
+        if not self.scenario_id or not self.run_id:
+            print(f"[{RUNNER_ID}] Cannot send runner_finished: scenario_id or run_id is None")
+            return
+        msg = {
+            "event_type": "runner_finished",
+            "scenario_id": self.scenario_id,
+            "run_id": self.run_id,
+            "runner_id": RUNNER_ID,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        await self.kafka_producer.send_and_wait(RUNNER_HEARTBEATS_TOPIC, msg)
+        print(f"[{RUNNER_ID}] Sent runner_finished event for scenario {self.scenario_id} run_id={self.run_id}")
 
     async def stop_processing(self):
         self.processing = False
@@ -115,6 +134,7 @@ class Runner:
             self.heartbeat_task = None
         print(f"[{RUNNER_ID}] Stopped processing scenario {self.scenario_id}")
         self.scenario_id = None
+        self.run_id = None
 
     async def heartbeat_loop(self):
         while self.processing:
@@ -122,16 +142,17 @@ class Runner:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
 
     async def send_heartbeat(self):
-        if not self.scenario_id:
+        if not self.scenario_id or not self.run_id:
             return
         msg = {
             "event_type": "heartbeat",
             "scenario_id": self.scenario_id,
+            "run_id": self.run_id,  # обязательно включаем run_id!
             "runner_id": RUNNER_ID,
             "timestamp": datetime.utcnow().isoformat(),
         }
-        await self.kafka_producer.send_and_wait(SCENARIO_EVENTS_TOPIC, msg)
-        print(f"[{RUNNER_ID}] Sent heartbeat for scenario {self.scenario_id}")
+        await self.kafka_producer.send_and_wait(RUNNER_HEARTBEATS_TOPIC, msg)
+        print(f"[{RUNNER_ID}] Sent heartbeat for scenario {self.scenario_id} run_id={self.run_id}")
 
     async def save_frame(self, scenario_id: str, frame_idx: int):
         async with s3_client() as s3:
@@ -153,7 +174,6 @@ class Runner:
                 marker = json.loads(data)
                 return marker.get("last_frame_idx", 0) + 1
             except Exception as e:
-                # Если файл не найден — начинаем с 0 кадра
                 return 0
 
 if __name__ == "__main__":

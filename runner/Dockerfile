@@ -2,9 +2,12 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-COPY runner /app
+COPY runner/requirements.txt /app/requirements.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update && apt-get install -y ffmpeg libsm6 libxext6 && \
+    pip install --no-cache-dir -r requirements.txt
+
+COPY runner /app
 
 ENV PYTHONUNBUFFERED=1
 

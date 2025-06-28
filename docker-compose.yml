@@ -38,7 +38,7 @@ services:
     container_name: orchestrator_service
     depends_on:
       - db_orchestrator
-      - kafka
+      - kafka-init
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_orchestrator:5432/orchestrator
     networks:
@@ -51,7 +51,7 @@ services:
     container_name: api_service
     depends_on:
       - db_api
-      - kafka
+      - kafka-init
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_api:5432/api
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
@@ -113,7 +113,6 @@ services:
     networks:
       - backend
 
-
   minio-init:
     image: minio/mc
     container_name: minio-init
@@ -121,10 +120,34 @@ services:
       - minio
     entrypoint: >
       /bin/sh -c "
-      sleep 5;
-      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      echo 'Wait for MinIO...';
+      until /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin; do
+        echo 'MinIO not ready, waiting...';
+        sleep 3;
+      done;
+      echo 'MinIO ready!';
       /usr/bin/mc mb -p myminio/mybucket;
       /usr/bin/mc policy set public myminio/mybucket;
+      exit 0;
+      "
+    networks:
+      - backend
+
+  # ----------- Kafka Topics Initialization --------
+  kafka-init:
+    image: bitnami/kafka:3.6
+    container_name: kafka-init
+    depends_on:
+      - kafka
+    entrypoint: >
+      /bin/bash -c "
+      echo 'Wait for Kafka...';
+      sleep 10;
+      /opt/bitnami/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --replication-factor 1 --partitions 3 --topic scenario_commands;
+      /opt/bitnami/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --replication-factor 1 --partitions 3 --topic scenario_events;
+      /opt/bitnami/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --replication-factor 1 --partitions 3 --topic runner_commands;
+      /opt/bitnami/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --replication-factor 1 --partitions 3 --topic runner_heartbeats;
+      echo 'Kafka topics initialized';
       exit 0;
       "
     networks:
@@ -144,11 +167,15 @@ services:
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_ENDPOINT_URL: http://minio:9000
       RUNNER_ID: runner-1
+      RUNNER_COMMANDS_TOPIC: runner_commands
+      RUNNER_HEARTBEATS_TOPIC: runner_heartbeats
     depends_on:
-      - kafka
+      - kafka-init
       - minio
     networks:
       - backend
+    volumes:
+      - C:\pyprojects\input_videos:/input_videos
 
   # ------------------ RUNNER-2 (резервный) -------------------
   runner2:
@@ -164,11 +191,15 @@ services:
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_ENDPOINT_URL: http://minio:9000
       RUNNER_ID: runner-2
+      RUNNER_COMMANDS_TOPIC: runner_commands
+      RUNNER_HEARTBEATS_TOPIC: runner_heartbeats
     depends_on:
-      - kafka
+      - kafka-init
       - minio
     networks:
       - backend
+    volumes:
+      - C:\pyprojects\input_videos:/input_videos
 
 volumes:
   postgres_orchestrator_data:
